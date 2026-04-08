@@ -28,8 +28,8 @@ _llm = ChatOllama(base_url=cfg.ollama_base_url, model=cfg.ollama_model, temperat
 
 def _db_connection() -> pymysql.connections.Connection:
     return pymysql.connect(
-        host=cfg.ngrok_db_host,
-        port=cfg.ngrok_db_port,
+        host=cfg.db_host,
+        port=cfg.db_port,
         user=cfg.db_user,
         password=cfg.db_password,
         database=cfg.db_name,
