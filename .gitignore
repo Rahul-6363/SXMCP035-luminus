@@ -1,2 +1,53 @@
+# ── Secrets ───────────────────────────────────────────────
 .env
-.env.example
+.env.local
+.env.*.local
+
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+backend/venv/
+backend/.venv/
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Node / Frontend ────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── ERP Mail System (excluded for now) ────────────────────
+erp_mail_system/
+
+# ── Database / SQL dumps ───────────────────────────────────
+*.sql.bak
+*.dump
+
+# ── OS ────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editor ────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.sln
+*.sw?
+
+# ── Logs ──────────────────────────────────────────────────
+*.log
+logs/

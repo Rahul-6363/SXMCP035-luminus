@@ -7,4 +7,5 @@ langchain-core>=0.2.0
 langchain-ollama>=0.1.0
 langgraph>=0.1.0
 pymysql>=1.1.0
+sqlalchemy>=2.0.0
 cryptography>=42.0.0   # pymysql optional dep for mysql_native_password
