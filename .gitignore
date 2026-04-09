@@ -1,9 +1,9 @@
-# ── Secrets ───────────────────────────────────────────────
+# ── Secrets ────────────────────────────────────────────────
 .env
 .env.local
 .env.*.local
 
-# ── Python ────────────────────────────────────────────────
+# ── Python ─────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
@@ -11,6 +11,8 @@ __pycache__/
 .Python
 backend/venv/
 backend/.venv/
+venv/
+.venv/
 *.egg-info/
 dist/
 build/
@@ -19,35 +21,34 @@ build/
 .mypy_cache/
 .ruff_cache/
 
-# ── Node / Frontend ────────────────────────────────────────
+# ── Node / Frontend ─────────────────────────────────────────
 node_modules/
 frontend/dist/
 frontend/dist-ssr/
+erp_mail_system/node_modules/
 *.local
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+package-lock.json
 
-# ── ERP Mail System (excluded for now) ────────────────────
-erp_mail_system/
-
-# ── Database / SQL dumps ───────────────────────────────────
+# ── Database / SQL dumps ────────────────────────────────────
 *.sql.bak
 *.dump
 
-# ── OS ────────────────────────────────────────────────────
+# ── OS ─────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# ── Editor ────────────────────────────────────────────────
+# ── Editor ─────────────────────────────────────────────────
 .vscode/
 .idea/
 *.suo
 *.sln
 *.sw?
 
-# ── Logs ──────────────────────────────────────────────────
+# ── Logs ───────────────────────────────────────────────────
 *.log
 logs/
