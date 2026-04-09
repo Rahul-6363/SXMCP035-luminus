@@ -14,6 +14,19 @@ class Settings(BaseSettings):
     DB_USER: str = "root"
     DB_PASSWORD: str = "Saurav%40007"
 
+    # Mailer
+    MAILER_URL: str = "http://localhost:3001"
+    CUSTOMER_EMAIL: str = ""   # set in .env — receives BOM-ready notifications
+
+    # IMAP mail reader — polls inbox for vendor shipment replies
+    IMAP_HOST: str = "imap.gmail.com"
+    IMAP_USER: str = ""   # Gmail address that receives vendor replies
+    IMAP_PASS: str = ""   # Gmail app password
+    IMAP_POLL_INTERVAL: int = 60  # seconds between polls
+
+    # Discord — channel ID where shipment notifications are posted
+    DISCORD_NOTIFY_CHANNEL_ID: int = 0
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

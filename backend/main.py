@@ -8,6 +8,7 @@ Routes:
   POST /chat            — natural language → agent → response + shortages
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -20,8 +21,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from agent import run_agent, run_agent_stream
+from agent import run_agent, run_agent_stream, warmup_llm
 from init_db import init_db
+from mail_reader import start_mail_poller
 from mcp_tools import _engine, _rows
 
 logging.basicConfig(
@@ -32,7 +34,9 @@ logger = logging.getLogger("mcp_host")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()   # create tables + seed on first run
+    init_db()           # create tables + seed on first run
+    await warmup_llm()  # pre-load LLM into VRAM
+    asyncio.create_task(start_mail_poller())  # background IMAP poller
     yield
 
 app = FastAPI(title="ERP MCP Host", version="1.0.0", lifespan=lifespan)
@@ -183,6 +187,129 @@ def get_bom_detail(bom_name: str):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# ---------------------------------------------------------------------------
+# Shipment routes
+# ---------------------------------------------------------------------------
+
+@app.get("/api/shipments")
+def get_shipments(status: str = "pending"):
+    """Returns shipments filtered by status: pending | approved | rejected | all."""
+    try:
+        with _engine.connect() as conn:
+            if status == "all":
+                rows = _rows(conn,
+                    "SELECT * FROM pending_shipments ORDER BY created_at DESC LIMIT 50")
+            else:
+                rows = _rows(conn,
+                    "SELECT * FROM pending_shipments WHERE status = :s "
+                    "ORDER BY created_at DESC",
+                    s=status)
+        # parsed_items is stored as JSON string in MySQL — parse it
+        for r in rows:
+            if isinstance(r.get("parsed_items"), str):
+                try:
+                    r["parsed_items"] = json.loads(r["parsed_items"])
+                except Exception:
+                    r["parsed_items"] = []
+        return rows
+    except Exception as exc:
+        logger.exception("get_shipments error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/shipments/pending-count")
+def pending_shipment_count():
+    """Lightweight count used by the navbar badge."""
+    try:
+        with _engine.connect() as conn:
+            count = conn.execute(
+                text("SELECT COUNT(*) FROM pending_shipments WHERE status = 'pending'")
+            ).scalar()
+        return {"count": count}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/shipments/{shipment_id}/approve")
+def approve_shipment(shipment_id: int):
+    """Approve a pending shipment → update inventory for each parsed item."""
+    try:
+        with _engine.connect() as conn:
+            rows = _rows(conn,
+                "SELECT * FROM pending_shipments WHERE id = :id", id=shipment_id)
+        if not rows:
+            raise HTTPException(status_code=404, detail="Shipment not found.")
+        shipment = rows[0]
+        if shipment["status"] != "pending":
+            raise HTTPException(status_code=400,
+                detail=f"Shipment is already '{shipment['status']}'.")
+
+        items = shipment.get("parsed_items") or []
+        if isinstance(items, str):
+            items = json.loads(items)
+
+        updated, skipped = [], []
+        with _engine.begin() as conn:
+            for item in items:
+                code = item.get("item_code", "").strip().upper()
+                qty  = int(item.get("quantity", 0))
+                if not code or qty <= 0:
+                    skipped.append(item)
+                    continue
+                exists = _rows(conn, "SELECT code FROM items WHERE code = :code", code=code)
+                if not exists:
+                    skipped.append(item)
+                    logger.warning("Approve shipment #%d: item %s not in inventory — skipped.", shipment_id, code)
+                    continue
+                conn.execute(text(
+                    "UPDATE items SET quantity = quantity + :qty WHERE code = :code"),
+                    {"qty": qty, "code": code})
+                updated.append({"item_code": code, "quantity_added": qty})
+            # Mark approved
+            conn.execute(text(
+                "UPDATE pending_shipments SET status = 'approved' WHERE id = :id"),
+                {"id": shipment_id})
+
+        logger.info("Shipment #%d approved — %d item(s) updated.", shipment_id, len(updated))
+        return {
+            "success": True,
+            "shipment_id": shipment_id,
+            "items_updated": updated,
+            "items_skipped": skipped,
+            "message": f"Shipment approved. {len(updated)} inventory item(s) updated.",
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("approve_shipment error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/shipments/{shipment_id}/reject")
+def reject_shipment(shipment_id: int):
+    """Reject a pending shipment without touching inventory."""
+    try:
+        with _engine.begin() as conn:
+            rows = _rows(conn,
+                "SELECT id, status FROM pending_shipments WHERE id = :id", id=shipment_id)
+            if not rows:
+                raise HTTPException(status_code=404, detail="Shipment not found.")
+            if rows[0]["status"] != "pending":
+                raise HTTPException(status_code=400,
+                    detail=f"Shipment is already '{rows[0]['status']}'.")
+            conn.execute(text(
+                "UPDATE pending_shipments SET status = 'rejected' WHERE id = :id"),
+                {"id": shipment_id})
+        logger.info("Shipment #%d rejected.", shipment_id)
+        return {"success": True, "shipment_id": shipment_id,
+                "message": "Shipment rejected. Inventory unchanged."}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("reject_shipment error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(payload: ChatRequest):
     logger.info("Query: %s", payload.text)
@@ -209,10 +336,19 @@ async def chat_stream(payload: ChatRequest):
     """SSE streaming endpoint — yields events as the agent progresses."""
     logger.info("Stream query: %s", payload.text)
 
+    # Browsers (Chrome/Firefox) buffer SSE until they receive ~1–4 KB.
+    # Sending a 2 KB SSE comment at the start forces them to begin reading
+    # immediately. SSE comments start with ":" and are silently ignored.
+    _FLUSH_PAD = ": " + " " * 2048 + "\n\n"
+
     async def event_generator():
+        # Send flush pad first so browser starts reading right away
+        yield _FLUSH_PAD
+        await asyncio.sleep(0)
         try:
             async for event in run_agent_stream(payload.text, session_id=payload.session_id):
                 yield f"data: {json.dumps(event)}\n\n"
+                await asyncio.sleep(0)   # hand control back → uvicorn flushes chunk
         except Exception as exc:
             logger.exception("Stream error")
             yield f"data: {json.dumps({'type': 'error', 'text': str(exc)})}\n\n"
@@ -221,7 +357,9 @@ async def chat_stream(payload: ChatRequest):
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
+            "Cache-Control":     "no-cache",
+            "X-Accel-Buffering": "no",        # disable nginx/proxy buffering
+            "Connection":        "keep-alive",
+            "Transfer-Encoding": "chunked",
         },
     )

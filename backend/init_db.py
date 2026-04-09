@@ -54,7 +54,22 @@ def init_db():
                 )
             """))
 
-        logger.info("Database ready — items, bom, bom_items tables verified.")
+            # Create pending_shipments table
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS pending_shipments (
+                    id           INT AUTO_INCREMENT PRIMARY KEY,
+                    email_uid    VARCHAR(200) UNIQUE NOT NULL,
+                    sender       VARCHAR(255),
+                    subject      VARCHAR(500),
+                    received_at  DATETIME,
+                    raw_excerpt  TEXT,
+                    parsed_items JSON,
+                    status       ENUM('pending','approved','rejected') DEFAULT 'pending',
+                    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+
+        logger.info("Database ready — items, bom, bom_items, pending_shipments tables verified.")
     except Exception as exc:
         logger.error("DB init failed: %s", exc)
         raise

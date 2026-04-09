@@ -3,7 +3,9 @@ MCP Domain Tools for ERP — Inventory & BOM management.
 
 Tools:
   check_inventory         — view inventory items
+  insert_inventory        — add a brand-new inventory item
   update_inventory        — adjust stock quantity
+  delete_inventory        — remove an inventory item
   create_bom              — define a new Bill of Materials
   get_bom                 — view BOM with component stock status
   update_bom              — modify BOM header fields
@@ -83,7 +85,106 @@ def check_inventory(item_code: str = "", search: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool 2 — update_inventory
+# Tool 2 — insert_inventory
+# ---------------------------------------------------------------------------
+@tool
+def insert_inventory(
+    code: str,
+    description: str,
+    category: str,
+    uom: str,
+    quantity: int,
+    standard_cost: float = 0.0,
+    lead_time: int = 7,
+) -> str:
+    """
+    Inserts a brand-new inventory item into the ERP system.
+
+    Field reference (what to provide and their data types):
+      code          : str   — Unique item code. Convention: 'ITMxxx' (e.g. 'ITM031').
+                              Must not already exist in the system.
+      description   : str   — Human-readable item name (e.g. 'USB-C Charging Cable 1m').
+      category      : str   — Item category (e.g. 'Cables', 'Electronics', 'Cooling',
+                              'Packaging', 'Accessories').
+      uom           : str   — Unit of measure: 'pcs', 'kg', 'm', 'litre', 'set', etc.
+      quantity      : int   — Opening stock count (e.g. 100).
+      standard_cost : float — Cost per unit in INR (optional, default 0.0).
+      lead_time     : int   — Procurement lead time in days (optional, default 7).
+
+    If any required field is missing the tool returns a schema hint so the user
+    knows exactly what to supply.
+
+    Args:
+        code:          Unique item code (e.g. 'ITM031').
+        description:   Item name / description.
+        category:      Inventory category.
+        uom:           Unit of measure.
+        quantity:      Opening stock quantity.
+        standard_cost: Cost per unit (INR).
+        lead_time:     Procurement lead time in days.
+    """
+    # Guard: surface schema if critical fields are empty
+    missing = [f for f, v in [("code", code), ("description", description),
+                               ("category", category), ("uom", uom)] if not v]
+    if missing or quantity is None:
+        return (
+            "Cannot insert — the following required fields are missing or empty:\n"
+            f"  Missing: {', '.join(missing) if missing else 'quantity'}\n\n"
+            "Please provide all required fields:\n"
+            "  code          : str   — unique item code, e.g. 'ITM031'\n"
+            "  description   : str   — item name, e.g. 'USB-C Cable 1m'\n"
+            "  category      : str   — e.g. 'Cables', 'Electronics', 'Cooling'\n"
+            "  uom           : str   — 'pcs', 'kg', 'm', 'litre', 'set'\n"
+            "  quantity      : int   — opening stock count, e.g. 50\n"
+            "  standard_cost : float — cost per unit in INR (optional, default 0)\n"
+            "  lead_time     : int   — procurement days (optional, default 7)\n\n"
+            "Example: 'add new item ITM031 USB-C Cable category Cables uom pcs qty 100 cost 120 lead 5'"
+        )
+
+    code = code.strip().upper()
+
+    try:
+        with _engine.begin() as conn:
+            existing = _rows(conn, "SELECT code FROM items WHERE code = :code", code=code)
+            if existing:
+                return (
+                    f"Item '{code}' already exists. "
+                    f"Use update_inventory to adjust its stock quantity, or choose a different code."
+                )
+
+            conn.execute(text(
+                "INSERT INTO items "
+                "(code, description, category, uom, quantity, quantity_in_use, standard_cost, lead_time) "
+                "VALUES (:code, :desc, :cat, :uom, :qty, 0, :cost, :lt)"
+            ), {
+                "code": code,
+                "desc": description.strip(),
+                "cat":  category.strip(),
+                "uom":  uom.strip(),
+                "qty":  int(quantity),
+                "cost": float(standard_cost),
+                "lt":   int(lead_time),
+            })
+
+        msg = (
+            f"New inventory item created successfully!\n"
+            f"  Code        : {code}\n"
+            f"  Description : {description}\n"
+            f"  Category    : {category}\n"
+            f"  UOM         : {uom}\n"
+            f"  Stock       : {quantity}\n"
+            f"  Cost/unit   : ₹{standard_cost:.2f}\n"
+            f"  Lead time   : {lead_time} day(s)"
+        )
+        logger.info("insert_inventory: created %s — %s (qty %s)", code, description, quantity)
+        return msg
+    except SQLAlchemyError as exc:
+        logger.error("insert_inventory error: %s", exc)
+        return f"DATABASE ERROR: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# Tool — update_inventory
 # ---------------------------------------------------------------------------
 @tool
 def update_inventory(item_code: str, quantity_change: int, reason: str = "") -> str:
@@ -125,7 +226,44 @@ def update_inventory(item_code: str, quantity_change: int, reason: str = "") -> 
 
 
 # ---------------------------------------------------------------------------
-# Tool 3 — create_bom
+# Tool 3 — delete_inventory
+# ---------------------------------------------------------------------------
+@tool
+def delete_inventory(item_code: str, reason: str = "") -> str:
+    """
+    Permanently removes an inventory item from the system.
+    Will fail if the item is referenced by any BOM.
+
+    Args:
+        item_code: Exact item code to delete (e.g. 'ITM011').
+        reason:    Optional reason for deletion.
+    """
+    try:
+        with _engine.begin() as conn:
+            rows = _rows(conn, "SELECT code, description FROM items WHERE code = :code", code=item_code)
+            if not rows:
+                return f"No inventory item found with code '{item_code}'."
+
+            # Check if any BOM references this item
+            refs = _rows(conn, "SELECT bom_id FROM bom_items WHERE item_code = :code", code=item_code)
+            if refs:
+                return (f"Cannot delete '{item_code}' — it is used in {len(refs)} BOM(s). "
+                        f"Remove it from those BOMs first.")
+
+            conn.execute(text("DELETE FROM items WHERE code = :code"), {"code": item_code})
+
+        msg = f"Inventory item '{item_code}' ({rows[0]['description']}) deleted successfully."
+        if reason:
+            msg += f" Reason: {reason}."
+        logger.info(msg)
+        return msg
+    except SQLAlchemyError as exc:
+        logger.error("delete_inventory error: %s", exc)
+        return f"DATABASE ERROR: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# Tool 4 — create_bom
 # ---------------------------------------------------------------------------
 @tool
 def create_bom(
